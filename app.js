@@ -1,6 +1,6 @@
 /**
  * Habit Tracker - Core Application Logic
- * Day 1: Project setup, dynamic rendering, and localStorage persistence.
+ * Day 2: Interactive daily completion, streak tracking, visual cues, and localStorage persistence.
  */
 
 (() => {
@@ -19,10 +19,116 @@
   const progressPercentEl = document.getElementById('progress-percent');
   const progressFillEl = document.getElementById('progress-fill');
   const activeBadgeEl = document.getElementById('active-badge');
+  const topStreakCountEl = document.getElementById('top-streak-count');
   const currentDateEl = document.getElementById('current-date');
 
   // Application State
   let habits = [];
+
+  /**
+   * Returns a local calendar date string in YYYY-MM-DD format.
+   * Uses local time to prevent timezone offset discrepancies.
+   * @param {Date} [date=new Date()]
+   * @returns {string}
+   */
+  function getLocalDateString(date = new Date()) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  /**
+   * Parses a YYYY-MM-DD date string into a local Date object.
+   * @param {string} dateStr
+   * @returns {Date}
+   */
+  function parseLocalDateString(dateStr) {
+    const [year, month, day] = dateStr.split('-').map(Number);
+    return new Date(year, month - 1, day);
+  }
+
+  /**
+   * Returns the YYYY-MM-DD date string for the calendar day immediately preceding dateStr.
+   * @param {string} dateStr
+   * @returns {string}
+   */
+  function getPreviousDateString(dateStr) {
+    const date = parseLocalDateString(dateStr);
+    date.setDate(date.getDate() - 1);
+    return getLocalDateString(date);
+  }
+
+  /**
+   * Calculates the current consecutive daily streak ending today or yesterday.
+   * - If completed today: counts consecutive completed days ending today.
+   * - If not completed today: if completed yesterday, streak is maintained ending yesterday.
+   * - If neither completed today nor yesterday: streak is 0.
+   * @param {string[]} completedDates Array of YYYY-MM-DD strings
+   * @param {string} [todayStr=getLocalDateString()]
+   * @returns {number}
+   */
+  function calculateCurrentStreak(completedDates, todayStr = getLocalDateString()) {
+    if (!Array.isArray(completedDates) || completedDates.length === 0) {
+      return 0;
+    }
+    const dateSet = new Set(completedDates);
+
+    let currentTarget;
+    if (dateSet.has(todayStr)) {
+      currentTarget = todayStr;
+    } else {
+      const yesterdayStr = getPreviousDateString(todayStr);
+      if (dateSet.has(yesterdayStr)) {
+        currentTarget = yesterdayStr;
+      } else {
+        return 0;
+      }
+    }
+
+    let streak = 0;
+    let curr = currentTarget;
+    while (dateSet.has(curr)) {
+      streak++;
+      curr = getPreviousDateString(curr);
+    }
+    return streak;
+  }
+
+  /**
+   * Calculates the best (longest) streak across completion history.
+   * @param {string[]} completedDates Array of YYYY-MM-DD strings
+   * @returns {number}
+   */
+  function calculateBestStreak(completedDates) {
+    if (!Array.isArray(completedDates) || completedDates.length === 0) {
+      return 0;
+    }
+    const sorted = Array.from(new Set(completedDates)).sort();
+    let best = 0;
+    let current = 0;
+    let prevDate = null;
+
+    for (const dateStr of sorted) {
+      const curDate = parseLocalDateString(dateStr);
+      if (prevDate) {
+        const diffTime = curDate.getTime() - prevDate.getTime();
+        const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+        if (diffDays === 1) {
+          current++;
+        } else {
+          current = 1;
+        }
+      } else {
+        current = 1;
+      }
+      if (current > best) {
+        best = current;
+      }
+      prevDate = curDate;
+    }
+    return best;
+  }
 
   /**
    * Format current date for the header subtitle
@@ -35,7 +141,7 @@
   }
 
   /**
-   * Load habits from localStorage safely
+   * Load habits from localStorage safely, with automatic migration for Day 1 data.
    * @returns {Array} List of stored habits
    */
   function loadHabits() {
@@ -43,7 +149,39 @@
       const rawData = localStorage.getItem(STORAGE_KEY);
       if (!rawData) return [];
       const parsed = JSON.parse(rawData);
-      return Array.isArray(parsed) ? parsed : [];
+      if (!Array.isArray(parsed)) return [];
+
+      const todayStr = getLocalDateString();
+
+      return parsed.map(habit => {
+        // Sanitize and migrate completedDates
+        let completedDates = Array.isArray(habit.completedDates) ? [...habit.completedDates] : [];
+
+        // Backward compatibility: If habit was marked completed in Day 1 without completedDates
+        if (completedDates.length === 0 && habit.completed) {
+          const createdDateStr = getLocalDateString(new Date(habit.createdAt || Date.now()));
+          completedDates.push(createdDateStr);
+        }
+
+        // Keep only unique, valid YYYY-MM-DD date strings
+        completedDates = Array.from(new Set(
+          completedDates.filter(d => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d))
+        )).sort();
+
+        const isCompletedToday = completedDates.includes(todayStr);
+        const currentStreak = calculateCurrentStreak(completedDates, todayStr);
+        const bestStreak = Math.max(habit.bestStreak || 0, calculateBestStreak(completedDates));
+
+        return {
+          id: habit.id || (Date.now().toString() + Math.random().toString(36).substring(2, 6)),
+          title: habit.title || 'Untitled Habit',
+          completed: isCompletedToday,
+          completedDates: completedDates,
+          streak: currentStreak,
+          bestStreak: bestStreak,
+          createdAt: habit.createdAt || Date.now()
+        };
+      });
     } catch (error) {
       console.error('Failed to load habits from localStorage:', error);
       return [];
@@ -62,7 +200,7 @@
   }
 
   /**
-   * Update statistics counters and progress bar
+   * Update statistics counters, streak indicator, and progress bar
    */
   function updateStats() {
     const total = habits.length;
@@ -76,6 +214,11 @@
 
     const activeCount = total - completed;
     activeBadgeEl.textContent = `${activeCount} remaining`;
+
+    if (topStreakCountEl) {
+      const topStreak = habits.reduce((max, h) => Math.max(max, h.streak || 0), 0);
+      topStreakCountEl.textContent = `${topStreak} 🔥`;
+    }
   }
 
   /**
@@ -104,15 +247,24 @@
       emptyState.classList.remove('visible');
 
       habits.forEach(habit => {
+        const isCompletedToday = Boolean(habit.completed);
+        const streak = habit.streak || 0;
+        const best = habit.bestStreak || 0;
+
         const li = document.createElement('li');
-        li.className = `habit-item ${habit.completed ? 'completed' : ''}`;
+        li.className = `habit-item ${isCompletedToday ? 'completed' : ''}`;
         li.dataset.id = habit.id;
 
         // Toggle button with custom checkbox circle
         const toggleBtn = document.createElement('button');
         toggleBtn.type = 'button';
         toggleBtn.className = 'toggle-btn';
-        toggleBtn.setAttribute('aria-label', habit.completed ? `Mark "${habit.title}" as incomplete` : `Mark "${habit.title}" as complete`);
+        toggleBtn.setAttribute('role', 'checkbox');
+        toggleBtn.setAttribute('aria-checked', isCompletedToday ? 'true' : 'false');
+        toggleBtn.setAttribute('aria-label', isCompletedToday
+          ? `Mark habit "${habit.title}" as incomplete for today`
+          : `Mark habit "${habit.title}" as complete for today`
+        );
         toggleBtn.dataset.action = 'toggle';
 
         const circle = document.createElement('span');
@@ -128,16 +280,59 @@
         const contentDiv = document.createElement('div');
         contentDiv.className = 'habit-content';
 
+        // Title row: title text + streak badge
+        const titleRow = document.createElement('div');
+        titleRow.className = 'habit-title-row';
+
         const titleSpan = document.createElement('span');
         titleSpan.className = 'habit-title';
         titleSpan.textContent = habit.title;
+
+        // Streak Badge
+        const streakBadge = document.createElement('span');
+        let streakBadgeClass = 'streak-badge';
+        if (streak === 0) {
+          streakBadgeClass += ' zero';
+        } else if (isCompletedToday) {
+          streakBadgeClass += ' active completed-today';
+        } else {
+          streakBadgeClass += ' active';
+        }
+        streakBadge.className = streakBadgeClass;
+        streakBadge.title = `Current streak: ${streak} ${streak === 1 ? 'day' : 'days'} (Best: ${best} ${best === 1 ? 'day' : 'days'})`;
+
+        streakBadge.innerHTML = `
+          <svg class="streak-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 2c-.6 1.8-1.7 3.3-3 4.5C7.2 8.3 6 10.8 6 13.5 6 17.1 8.7 20 12 20s6-2.9 6-6.5c0-2-1-3.9-2.5-5.2-.4 1.5-1.5 2.7-3 3.2 0-3.3-1.5-6.5-3.5-9.5z"/>
+          </svg>
+          <span class="streak-text">${streak} ${streak === 1 ? 'day' : 'days'}</span>
+        `;
+
+        titleRow.appendChild(titleSpan);
+        titleRow.appendChild(streakBadge);
+
+        // Meta details: status pill + creation date
+        const metaDiv = document.createElement('div');
+        metaDiv.className = 'habit-meta';
+
+        const statusPill = document.createElement('span');
+        statusPill.className = `habit-status-pill ${isCompletedToday ? 'completed' : 'pending'}`;
+        statusPill.textContent = isCompletedToday ? 'Completed today ✓' : 'Not completed today';
+
+        const dotSpan = document.createElement('span');
+        dotSpan.className = 'meta-dot';
+        dotSpan.innerHTML = '&bull;';
 
         const dateSpan = document.createElement('span');
         dateSpan.className = 'habit-date';
         dateSpan.textContent = `Added ${formatTimestamp(habit.createdAt)}`;
 
-        contentDiv.appendChild(titleSpan);
-        contentDiv.appendChild(dateSpan);
+        metaDiv.appendChild(statusPill);
+        metaDiv.appendChild(dotSpan);
+        metaDiv.appendChild(dateSpan);
+
+        contentDiv.appendChild(titleRow);
+        contentDiv.appendChild(metaDiv);
 
         const leftDiv = document.createElement('div');
         leftDiv.className = 'habit-left';
@@ -184,6 +379,9 @@
       id: Date.now().toString() + Math.random().toString(36).substring(2, 6),
       title: trimmed,
       completed: false,
+      completedDates: [],
+      streak: 0,
+      bestStreak: 0,
       createdAt: Date.now()
     };
 
@@ -194,14 +392,27 @@
   }
 
   /**
-   * Toggle completion state of a habit
+   * Toggle completion state of a habit for today
    * @param {string} id
    */
   function toggleHabit(id) {
     const habit = habits.find(h => h.id === id);
     if (!habit) return;
 
-    habit.completed = !habit.completed;
+    const todayStr = getLocalDateString();
+    const dateSet = new Set(habit.completedDates || []);
+
+    if (dateSet.has(todayStr)) {
+      dateSet.delete(todayStr);
+    } else {
+      dateSet.add(todayStr);
+    }
+
+    habit.completedDates = Array.from(dateSet).sort();
+    habit.completed = habit.completedDates.includes(todayStr);
+    habit.streak = calculateCurrentStreak(habit.completedDates, todayStr);
+    habit.bestStreak = Math.max(habit.bestStreak || 0, calculateBestStreak(habit.completedDates));
+
     saveHabits();
     renderHabits();
   }
