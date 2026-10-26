@@ -1,12 +1,13 @@
 /**
  * Habit Tracker - Core Application Logic
- * Weekly Matrix Edition: Interactive ticks, row-based habit tracking, streak calculations, and localStorage persistence.
+ * Day 3 Final Edition: Weekly Matrix, Inline Habit Editing, Safe Habit Deletion,
+ * Live Summary Dashboard, Real-time Streaks, and localStorage Persistence.
  */
 
 (() => {
   'use strict';
 
-  // Constants
+  // Storage Key & Constants
   const STORAGE_KEY = 'habit_tracker_habits_v1';
   const DAY_NAMES = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
 
@@ -20,19 +21,108 @@
   const prevWeekBtn = document.getElementById('prev-week-btn');
   const nextWeekBtn = document.getElementById('next-week-btn');
   const todayWeekBtn = document.getElementById('today-week-btn');
-
-  // Stats Elements
-  const totalCountEl = document.getElementById('total-count');
-  const completedCountEl = document.getElementById('completed-count');
-  const progressPercentEl = document.getElementById('progress-percent');
-  const progressFillEl = document.getElementById('progress-fill');
   const activeBadgeEl = document.getElementById('active-badge');
-  const topStreakCountEl = document.getElementById('top-streak-count');
   const currentDateEl = document.getElementById('current-date');
+
+  // Dashboard Stats Elements
+  const totalCountEl = document.getElementById('total-count');
+  const totalSubtextEl = document.getElementById('total-subtext');
+  const completedCountEl = document.getElementById('completed-count');
+  const completedSubtextEl = document.getElementById('completed-subtext');
+  const progressPercentEl = document.getElementById('progress-percent');
+  const progressSubtextEl = document.getElementById('progress-subtext');
+  const topStreakCountEl = document.getElementById('top-streak-count');
+  const streakSubtextEl = document.getElementById('streak-subtext');
+  const progressFillEl = document.getElementById('progress-fill');
+  const progressRatioEl = document.getElementById('progress-ratio');
+
+  // Delete Modal Elements
+  const deleteModal = document.getElementById('delete-modal');
+  const deleteHabitName = document.getElementById('delete-habit-name');
+  const cancelDeleteBtn = document.getElementById('cancel-delete-btn');
+  const confirmDeleteBtn = document.getElementById('confirm-delete-btn');
+
+  // Toast Container
+  const toastContainer = document.getElementById('toast-container');
 
   // Application State
   let habits = [];
   let currentWeekOffset = 0; // 0 = current week, -1 = last week, +1 = next week
+  let editingHabitId = null;  // ID of habit currently being edited inline
+  let pendingDeleteHabitId = null; // ID of habit awaiting delete confirmation
+
+  /**
+   * Escape HTML to prevent injection issues in template literals
+   * @param {string} str
+   * @returns {string}
+   */
+  function escapeHtml(str) {
+    if (!str) return '';
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  /**
+   * Show a modern floating toast notification
+   * @param {string} message
+   * @param {'info' | 'success' | 'danger'} [type='info']
+   */
+  function showToast(message, type = 'info') {
+    if (!toastContainer) return;
+
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+
+    let iconSvg = '';
+    if (type === 'success') {
+      iconSvg = `
+        <svg class="toast-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+      `;
+    } else if (type === 'danger') {
+      iconSvg = `
+        <svg class="toast-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        </svg>
+      `;
+    } else {
+      iconSvg = `
+        <svg class="toast-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="12" y1="16" x2="12" y2="12"></line>
+          <line x1="12" y1="8" x2="12.01" y2="8"></line>
+        </svg>
+      `;
+    }
+
+    toast.innerHTML = `
+      ${iconSvg}
+      <span class="toast-text">${escapeHtml(message)}</span>
+    `;
+
+    toastContainer.appendChild(toast);
+
+    // Trigger slide-in animation
+    requestAnimationFrame(() => {
+      toast.classList.add('visible');
+    });
+
+    // Auto dismiss after 2.8s
+    setTimeout(() => {
+      toast.classList.remove('visible');
+      setTimeout(() => {
+        if (toast.parentNode) {
+          toast.remove();
+        }
+      }, 250);
+    }, 2800);
+  }
 
   /**
    * Returns a local calendar date string in YYYY-MM-DD format.
@@ -198,6 +288,7 @@
     try {
       const rawData = localStorage.getItem(STORAGE_KEY);
       if (!rawData) return [];
+
       const parsed = JSON.parse(rawData);
       if (!Array.isArray(parsed)) return [];
 
@@ -247,24 +338,68 @@
   }
 
   /**
-   * Update statistics counters, streak indicator, and progress bar
+   * Update statistics counters, streak indicator, and progress bar in the dashboard
    */
-  function updateStats() {
+  function updateDashboard() {
     const total = habits.length;
     const completedToday = habits.filter(h => h.completed).length;
     const percentage = total === 0 ? 0 : Math.round((completedToday / total) * 100);
+    const remainingToday = total - completedToday;
 
-    totalCountEl.textContent = total;
-    completedCountEl.textContent = completedToday;
-    progressPercentEl.textContent = `${percentage}%`;
-    progressFillEl.style.width = `${percentage}%`;
+    // 1. Total Active Habits
+    if (totalCountEl) totalCountEl.textContent = total;
+    if (totalSubtextEl) {
+      totalSubtextEl.textContent = total === 1 ? '1 active habit' : `${total} active habits`;
+    }
 
-    const activeCount = total - completedToday;
-    activeBadgeEl.textContent = `${activeCount} remaining today`;
+    // 2. Completed Today
+    if (completedCountEl) completedCountEl.textContent = completedToday;
+    if (completedSubtextEl) {
+      completedSubtextEl.textContent = `${completedToday} of ${total} done`;
+    }
 
+    // 3. Completion Rate & Dynamic Motivator
+    if (progressPercentEl) progressPercentEl.textContent = `${percentage}%`;
+    if (progressSubtextEl) {
+      if (total === 0) {
+        progressSubtextEl.textContent = 'Add your first habit above';
+      } else if (percentage === 100) {
+        progressSubtextEl.textContent = 'All habits completed! 🎉';
+      } else if (percentage >= 75) {
+        progressSubtextEl.textContent = 'Almost there, finish strong!';
+      } else if (percentage >= 50) {
+        progressSubtextEl.textContent = 'Over halfway there!';
+      } else if (percentage > 0) {
+        progressSubtextEl.textContent = 'Great momentum started!';
+      } else {
+        progressSubtextEl.textContent = 'Ready to conquer today?';
+      }
+    }
+
+    // 4. Top Streak
+    const topStreak = habits.reduce((max, h) => Math.max(max, h.streak || 0), 0);
     if (topStreakCountEl) {
-      const topStreak = habits.reduce((max, h) => Math.max(max, h.streak || 0), 0);
       topStreakCountEl.textContent = `${topStreak} 🔥`;
+    }
+    if (streakSubtextEl) {
+      if (topStreak > 0) {
+        streakSubtextEl.textContent = `${topStreak} consecutive ${topStreak === 1 ? 'day' : 'days'}`;
+      } else {
+        streakSubtextEl.textContent = 'Start your streak today';
+      }
+    }
+
+    // 5. Progress Fill Bar & Ratio
+    if (progressFillEl) {
+      progressFillEl.style.width = `${percentage}%`;
+    }
+    if (progressRatioEl) {
+      progressRatioEl.textContent = `${completedToday} / ${total} completed`;
+    }
+
+    // 6. Section Badge
+    if (activeBadgeEl) {
+      activeBadgeEl.textContent = `${remainingToday} remaining today`;
     }
   }
 
@@ -283,7 +418,107 @@
   }
 
   /**
-   * Render the Matrix UI: Header columns, habit rows with interactive ticks, and inline add row.
+   * Start inline editing for a habit row
+   * @param {string} habitId
+   */
+  function startEditing(habitId) {
+    editingHabitId = habitId;
+    renderMatrix();
+  }
+
+  /**
+   * Cancel inline editing
+   */
+  function cancelEditing() {
+    editingHabitId = null;
+    renderMatrix();
+  }
+
+  /**
+   * Save edited habit title
+   * @param {string} habitId
+   * @param {string} newTitle
+   */
+  function saveHabitTitle(habitId, newTitle) {
+    const trimmed = (newTitle || '').trim();
+    if (!trimmed) {
+      showToast('Habit title cannot be empty', 'danger');
+      return;
+    }
+
+    const habit = habits.find(h => h.id === habitId);
+    if (!habit) {
+      cancelEditing();
+      return;
+    }
+
+    if (habit.title !== trimmed) {
+      const oldTitle = habit.title;
+      habit.title = trimmed;
+      saveHabits();
+      showToast(`Renamed to "${trimmed}"`, 'success');
+    }
+
+    editingHabitId = null;
+    renderMatrix();
+  }
+
+  /**
+   * Open delete confirmation modal
+   * @param {string} habitId
+   */
+  function openDeleteModal(habitId) {
+    const habit = habits.find(h => h.id === habitId);
+    if (!habit) return;
+
+    pendingDeleteHabitId = habitId;
+    if (deleteHabitName) {
+      deleteHabitName.textContent = `"${habit.title}"`;
+    }
+
+    if (deleteModal) {
+      deleteModal.classList.add('active');
+      deleteModal.setAttribute('aria-hidden', 'false');
+      if (cancelDeleteBtn) {
+        cancelDeleteBtn.focus();
+      }
+    }
+  }
+
+  /**
+   * Close delete confirmation modal
+   */
+  function closeDeleteModal() {
+    pendingDeleteHabitId = null;
+    if (deleteModal) {
+      deleteModal.classList.remove('active');
+      deleteModal.setAttribute('aria-hidden', 'true');
+    }
+  }
+
+  /**
+   * Confirm deletion of the pending habit
+   */
+  function confirmDeleteHabit() {
+    if (!pendingDeleteHabitId) return;
+
+    const habitToDelete = habits.find(h => h.id === pendingDeleteHabitId);
+    const title = habitToDelete ? habitToDelete.title : 'Habit';
+
+    habits = habits.filter(h => h.id !== pendingDeleteHabitId);
+    saveHabits();
+    closeDeleteModal();
+
+    if (editingHabitId === pendingDeleteHabitId) {
+      editingHabitId = null;
+    }
+
+    renderMatrix();
+    showToast(`Deleted "${title}"`, 'danger');
+  }
+
+  /**
+   * Render the Matrix UI: Header columns, habit rows with interactive ticks, inline editing, and inline add row.
    */
   function renderMatrix() {
     const weekDays = getWeekDays(currentWeekOffset);
@@ -352,9 +587,10 @@
     thScore.textContent = 'Week';
     matrixHeaderRow.appendChild(thScore);
 
-    // Action Column Header
+    // Actions Column Header
     const thAction = document.createElement('th');
     thAction.className = 'matrix-th th-action';
+    thAction.textContent = 'Actions';
     matrixHeaderRow.appendChild(thAction);
 
     // 3. Render Matrix Body Rows
@@ -368,29 +604,90 @@
       habits.forEach(habit => {
         const streak = habit.streak || 0;
         const best = habit.bestStreak || 0;
+        const isEditing = habit.id === editingHabitId;
+
         const tr = document.createElement('tr');
-        tr.className = 'matrix-row';
+        tr.className = `matrix-row ${isEditing ? 'is-row-editing' : ''}`;
         tr.dataset.id = habit.id;
 
         // Habit Name Cell (Sticky Left)
         const nameTd = document.createElement('td');
-        nameTd.className = 'habit-name-cell';
+        nameTd.className = `habit-name-cell ${isEditing ? 'editing' : ''}`;
 
-        const nameWrap = document.createElement('div');
-        nameWrap.className = 'habit-name-wrap';
+        if (isEditing) {
+          // Render Inline Edit Form
+          const editForm = document.createElement('form');
+          editForm.className = 'inline-edit-form';
+          editForm.dataset.habitId = habit.id;
+          editForm.setAttribute('autocomplete', 'off');
 
-        const titleSpan = document.createElement('span');
-        titleSpan.className = 'habit-title';
-        titleSpan.textContent = habit.title;
-        titleSpan.title = habit.title;
+          const editInput = document.createElement('input');
+          editInput.type = 'text';
+          editInput.className = 'inline-edit-input';
+          editInput.value = habit.title;
+          editInput.maxLength = 80;
+          editInput.setAttribute('aria-label', `Edit habit title: ${habit.title}`);
+          editInput.required = true;
 
-        const dateSpan = document.createElement('span');
-        dateSpan.className = 'habit-created-date';
-        dateSpan.textContent = `Added ${formatTimestamp(habit.createdAt)}`;
+          const btnGroup = document.createElement('div');
+          btnGroup.className = 'inline-edit-btn-group';
 
-        nameWrap.appendChild(titleSpan);
-        nameWrap.appendChild(dateSpan);
-        nameTd.appendChild(nameWrap);
+          const saveBtn = document.createElement('button');
+          saveBtn.type = 'submit';
+          saveBtn.className = 'inline-edit-btn save-btn';
+          saveBtn.setAttribute('title', 'Save changes (Enter)');
+          saveBtn.setAttribute('aria-label', 'Save changes');
+          saveBtn.innerHTML = `
+            <svg class="edit-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          `;
+
+          const cancelBtn = document.createElement('button');
+          cancelBtn.type = 'button';
+          cancelBtn.className = 'inline-edit-btn cancel-btn';
+          cancelBtn.dataset.action = 'cancel-edit';
+          cancelBtn.setAttribute('title', 'Cancel (Esc)');
+          cancelBtn.setAttribute('aria-label', 'Cancel editing');
+          cancelBtn.innerHTML = `
+            <svg class="edit-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          `;
+
+          btnGroup.appendChild(saveBtn);
+          btnGroup.appendChild(cancelBtn);
+          editForm.appendChild(editInput);
+          editForm.appendChild(btnGroup);
+          nameTd.appendChild(editForm);
+
+          // Focus and select input after DOM node is inserted
+          setTimeout(() => {
+            editInput.focus();
+            editInput.select();
+          }, 0);
+        } else {
+          // Regular view mode
+          const nameWrap = document.createElement('div');
+          nameWrap.className = 'habit-name-wrap';
+
+          const titleSpan = document.createElement('span');
+          titleSpan.className = 'habit-title';
+          titleSpan.textContent = habit.title;
+          titleSpan.title = `${habit.title} (Double-click to edit)`;
+          titleSpan.dataset.action = 'start-edit';
+          titleSpan.dataset.habitId = habit.id;
+
+          const dateSpan = document.createElement('span');
+          dateSpan.className = 'habit-created-date';
+          dateSpan.textContent = `Added ${formatTimestamp(habit.createdAt)}`;
+
+          nameWrap.appendChild(titleSpan);
+          nameWrap.appendChild(dateSpan);
+          nameTd.appendChild(nameWrap);
+        }
+
         tr.appendChild(nameTd);
 
         // 7 Day Tick Cells
@@ -461,15 +758,35 @@
         scoreTd.appendChild(scorePill);
         tr.appendChild(scoreTd);
 
-        // Action Cell (Delete Button)
+        // Action Cell (Edit & Delete Buttons)
         const actionTd = document.createElement('td');
         actionTd.className = 'action-cell';
 
+        const actionGroup = document.createElement('div');
+        actionGroup.className = 'action-btn-group';
+
+        // Edit Button
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'action-btn edit-btn';
+        editBtn.dataset.action = 'start-edit';
+        editBtn.dataset.habitId = habit.id;
+        editBtn.setAttribute('title', `Edit habit "${habit.title}"`);
+        editBtn.setAttribute('aria-label', `Edit habit "${habit.title}"`);
+        editBtn.innerHTML = `
+          <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+          </svg>
+        `;
+
+        // Delete Button
         const deleteBtn = document.createElement('button');
         deleteBtn.type = 'button';
         deleteBtn.className = 'action-btn delete-btn';
-        deleteBtn.dataset.action = 'delete';
+        deleteBtn.dataset.action = 'open-delete';
         deleteBtn.dataset.habitId = habit.id;
+        deleteBtn.setAttribute('title', `Delete habit "${habit.title}"`);
         deleteBtn.setAttribute('aria-label', `Delete habit "${habit.title}"`);
         deleteBtn.innerHTML = `
           <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -477,7 +794,10 @@
             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
           </svg>
         `;
-        actionTd.appendChild(deleteBtn);
+
+        actionGroup.appendChild(editBtn);
+        actionGroup.appendChild(deleteBtn);
+        actionTd.appendChild(actionGroup);
         tr.appendChild(actionTd);
 
         matrixBody.appendChild(tr);
@@ -515,7 +835,7 @@
     addRow.appendChild(addCell);
     matrixBody.appendChild(addRow);
 
-    updateStats();
+    updateDashboard();
   }
 
   /**
@@ -523,7 +843,7 @@
    * @param {string} title
    */
   function addHabit(title) {
-    const trimmed = title.trim();
+    const trimmed = (title || '').trim();
     if (!trimmed) return;
 
     const newHabit = {
@@ -536,9 +856,10 @@
       createdAt: Date.now()
     };
 
-    habits.push(newHabit); // Appends as new row
+    habits.push(newHabit);
     saveHabits();
     renderMatrix();
+    showToast(`Added habit "${trimmed}"`, 'success');
   }
 
   /**
@@ -553,7 +874,8 @@
     const todayStr = getLocalDateString();
     const dateSet = new Set(habit.completedDates || []);
 
-    if (dateSet.has(dateStr)) {
+    const wasTicked = dateSet.has(dateStr);
+    if (wasTicked) {
       dateSet.delete(dateStr);
     } else {
       dateSet.add(dateStr);
@@ -566,20 +888,16 @@
 
     saveHabits();
     renderMatrix();
+
+    if (!wasTicked && dateStr === todayStr) {
+      if (habit.streak > 1) {
+        showToast(`Streak active: ${habit.streak} days on "${habit.title}"! 🔥`, 'success');
+      }
+    }
   }
 
   /**
-   * Delete a habit row from the matrix
-   * @param {string} id
-   */
-  function deleteHabit(id) {
-    habits = habits.filter(h => h.id !== id);
-    saveHabits();
-    renderMatrix();
-  }
-
-  /**
-   * Initialize Event Listeners
+   * Initialize all event listeners
    */
   function initEvents() {
     // Top habit form submit listener
@@ -617,29 +935,57 @@
       });
     }
 
-    // Delegated click and submit events on matrix table body
+    // Matrix Body Click Listener (Delegated)
     if (matrixBody) {
       matrixBody.addEventListener('click', (e) => {
+        // 1. Action button clicks
         const actionBtn = e.target.closest('[data-action]');
-        if (!actionBtn) return;
-
-        const action = actionBtn.dataset.action;
-
-        if (action === 'toggle-date') {
+        if (actionBtn) {
+          const action = actionBtn.dataset.action;
           const habitId = actionBtn.dataset.habitId;
-          const date = actionBtn.dataset.date;
-          if (habitId && date) {
-            toggleHabitDate(habitId, date);
+
+          if (action === 'toggle-date') {
+            const date = actionBtn.dataset.date;
+            if (habitId && date) {
+              toggleHabitDate(habitId, date);
+            }
+          } else if (action === 'start-edit') {
+            if (habitId) {
+              startEditing(habitId);
+            }
+          } else if (action === 'cancel-edit') {
+            cancelEditing();
+          } else if (action === 'open-delete') {
+            if (habitId) {
+              openDeleteModal(habitId);
+            }
           }
-        } else if (action === 'delete') {
-          const habitId = actionBtn.dataset.habitId;
-          if (habitId) {
-            deleteHabit(habitId);
-          }
+          return;
         }
       });
 
+      // Double-click habit title to edit
+      matrixBody.addEventListener('dblclick', (e) => {
+        const titleEl = e.target.closest('.habit-title');
+        if (titleEl && titleEl.dataset.habitId) {
+          startEditing(titleEl.dataset.habitId);
+        }
+      });
+
+      // Matrix Form Submissions: Inline Edit and Inline Add
       matrixBody.addEventListener('submit', (e) => {
+        // A. Inline Edit Form
+        if (e.target && e.target.classList.contains('inline-edit-form')) {
+          e.preventDefault();
+          const habitId = e.target.dataset.habitId;
+          const input = e.target.querySelector('.inline-edit-input');
+          if (habitId && input) {
+            saveHabitTitle(habitId, input.value);
+          }
+          return;
+        }
+
+        // B. Inline Add Row Form
         if (e.target && e.target.id === 'matrix-inline-form') {
           e.preventDefault();
           const input = e.target.querySelector('.matrix-inline-input');
@@ -650,7 +996,43 @@
           }
         }
       });
+
+      // Escape key to cancel editing inside input
+      matrixBody.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && e.target.classList.contains('inline-edit-input')) {
+          e.preventDefault();
+          cancelEditing();
+        }
+      });
     }
+
+    // Delete Confirmation Modal Listeners
+    if (cancelDeleteBtn) {
+      cancelDeleteBtn.addEventListener('click', closeDeleteModal);
+    }
+
+    if (confirmDeleteBtn) {
+      confirmDeleteBtn.addEventListener('click', confirmDeleteHabit);
+    }
+
+    if (deleteModal) {
+      deleteModal.addEventListener('click', (e) => {
+        if (e.target === deleteModal) {
+          closeDeleteModal();
+        }
+      });
+    }
+
+    // Global Keydown Listeners (Escape for modal/inline edit)
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        if (deleteModal && deleteModal.classList.contains('active')) {
+          closeDeleteModal();
+        } else if (editingHabitId) {
+          cancelEditing();
+        }
+      }
+    });
   }
 
   /**
